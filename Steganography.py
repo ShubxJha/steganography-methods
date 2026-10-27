@@ -6,6 +6,7 @@
 
 import numpy as np
 import cv2
+from itertools import islice
 
 
 # In[2]:
@@ -183,67 +184,154 @@ def msgtobinary(msg):
 # In[8]:
 
 
+_BPCS_BLOCK_SIZE = 8
+_BPCS_COMPLEXITY_THRESHOLD = 0.3
+_BPCS_MAGIC = b"BPCS1"
+_BPCS_CHECKERBOARD = np.indices((_BPCS_BLOCK_SIZE, _BPCS_BLOCK_SIZE)).sum(axis=0) % 2
+
+
+def _bpcs_carrier_blocks(img):
+    """Yield full 8x8 blocks in each channel bit-plane."""
+    height, width, channels = img.shape
+    for channel in range(channels):
+        for bit_plane in range(8):
+            for top in range(0, height - 7, 8):
+                for left in range(0, width - 7, 8):
+                    yield channel, bit_plane, top, left
+
+
+def _bpcs_block_count(img):
+    height, width, channels = img.shape
+    return channels * 8 * (height // 8) * (width // 8)
+
+
+def _bpcs_read_block(img, location):
+    channel, bit_plane, top, left = location
+    pixels = img[top:top + 8, left:left + 8, channel]
+    return ((pixels >> bit_plane) & 1).astype(np.uint8)
+
+
+def _bpcs_write_block(img, location, block):
+    channel, bit_plane, top, left = location
+    pixels = img[top:top + 8, left:left + 8, channel]
+    mask = np.uint8(1 << bit_plane)
+    img[top:top + 8, left:left + 8, channel] = (
+        (pixels & np.uint8(255 ^ int(mask))) | (block.astype(np.uint8) * mask)
+    )
+
+
+def _bpcs_complexity(block):
+    transformed = block ^ _BPCS_CHECKERBOARD
+    transitions = np.count_nonzero(transformed[:, 1:] != transformed[:, :-1])
+    transitions += np.count_nonzero(transformed[1:, :] != transformed[:-1, :])
+    return transitions / 112.0
+
+
+def _bits_to_bytes(bits):
+    if len(bits) % 8:
+        bits += "0" * (8 - len(bits) % 8)
+    return bytes(int(bits[index:index + 8], 2) for index in range(0, len(bits), 8))
+
+
 def encode_img_data(img):
-    data=input("\nEnter the data to be Encoded in Image :")    
-    if (len(data) == 0): 
-        raise ValueError('Data entered to be encoded is empty')
-  
-    nameoffile = input("\nEnter the name of the New Image (Stego Image) after Encoding(with extension):")
-    
-    no_of_bytes=(img.shape[0] * img.shape[1] * 3) // 8
-    
-    print("\t\nMaximum bytes to encode in Image :", no_of_bytes)
-    
-    if(len(data)>no_of_bytes):
-        raise ValueError("Insufficient bytes Error, Need Bigger Image or give Less Data !!")
-    
-    data +='*^*^*'    
-    
-    binary_data=msgtobinary(data)
-    print("\n")
-    print(binary_data)
-    length_data=len(binary_data)
-    
-    print("\nThe Length of Binary data",length_data)
-    
-    index_data = 0
-    
-    for i in img:
-        for pixel in i:
-            r, g, b = msgtobinary(pixel)
-            if index_data < length_data:
-                pixel[0] = int(r[:-1] + binary_data[index_data], 2) 
-                index_data += 1
-            if index_data < length_data:
-                pixel[1] = int(g[:-1] + binary_data[index_data], 2) 
-                index_data += 1
-            if index_data < length_data:
-                pixel[2] = int(b[:-1] + binary_data[index_data], 2) 
-                index_data += 1
-            if index_data >= length_data:
-                break
-    cv2.imwrite(nameoffile,img)
-    print("\nEncoded the data successfully in the Image and the image is successfully saved with name ",nameoffile)
+    message = input("\nEnter the data to be Encoded in Image :")
+    if not message:
+        raise ValueError("Data entered to be encoded is empty")
+    output_name = input("\nEnter the name of the New Image (PNG or BMP): ").strip()
+    if not output_name.lower().endswith((".png", ".bmp")):
+        raise ValueError("BPCS output must use a lossless .png or .bmp extension")
 
+    payload = message.encode("utf-8") + b"*^*^*"
+    payload_bits = "".join(format(byte, "08b") for byte in payload)
+    data_block_count = (len(payload_bits) + 63) // 64
+    flags_size = (data_block_count + 7) // 8
+    header_size = len(_BPCS_MAGIC) + 8 + flags_size
+    header_block_count = (header_size * 8 + 63) // 64
+    available_blocks = _bpcs_block_count(img)
+    required_blocks = header_block_count + data_block_count
+    if required_blocks > available_blocks:
+        raise ValueError(
+            f"Message is too large: BPCS needs {required_blocks} blocks, "
+            f"but this image has {available_blocks}."
+        )
+    locations = list(islice(_bpcs_carrier_blocks(img), required_blocks))
 
-# In[9]:
+    flags = []
+    encoded_blocks = []
+    for index in range(data_block_count):
+        bits = payload_bits[index * 64:(index + 1) * 64].ljust(64, "0")
+        block = np.fromiter((int(bit) for bit in bits), dtype=np.uint8).reshape((8, 8))
+        transformed = block ^ _BPCS_CHECKERBOARD
+        conjugated = _bpcs_complexity(transformed) < _BPCS_COMPLEXITY_THRESHOLD
+        if conjugated:
+            transformed = 1 - transformed
+        flags.append(conjugated)
+        encoded_blocks.append(transformed ^ _BPCS_CHECKERBOARD)
+
+    conjugation_map = bytearray(flags_size)
+    for index, conjugated in enumerate(flags):
+        if conjugated:
+            conjugation_map[index // 8] |= 1 << (7 - index % 8)
+    header = _BPCS_MAGIC + len(payload).to_bytes(8, "big") + bytes(conjugation_map)
+    header_bits = "".join(format(byte, "08b") for byte in header)
+    for index in range(header_block_count):
+        bits = header_bits[index * 64:(index + 1) * 64].ljust(64, "0")
+        block = np.fromiter((int(bit) for bit in bits), dtype=np.uint8).reshape((8, 8))
+        _bpcs_write_block(img, locations[index], block)
+    for index, block in enumerate(encoded_blocks):
+        _bpcs_write_block(img, locations[header_block_count + index], block)
+
+    if not cv2.imwrite(output_name, img):
+        raise OSError(f"Could not write image: {output_name}")
+    print(f"Encoded the data with BPCS and saved the image as {output_name}")
 
 
 def decode_img_data(img):
-    data_binary = ""
-    for i in img:
-        for pixel in i:
-            r, g, b = msgtobinary(pixel) 
-            data_binary += r[-1]  
-            data_binary += g[-1]  
-            data_binary += b[-1]  
-            total_bytes = [ data_binary[i: i+8] for i in range(0, len(data_binary), 8) ]
-            decoded_data = ""
-            for byte in total_bytes:
-                decoded_data += chr(int(byte, 2))
-                if decoded_data[-5:] == "*^*^*": 
-                    print("\n\nThe Encoded data which was hidden in the Image was :--  ",decoded_data[:-5])
-                    return 
+    if _bpcs_block_count(img) < 2:
+        raise ValueError("Image is too small to contain a BPCS message")
+    prefix_locations = list(islice(_bpcs_carrier_blocks(img), 2))
+    prefix_bits = "".join(
+        str(bit) for location in prefix_locations
+        for bit in _bpcs_read_block(img, location).flat
+    )
+    prefix = _bits_to_bytes(prefix_bits)[:13]
+    if not prefix.startswith(_BPCS_MAGIC):
+        raise ValueError("No BPCS message header found in this image")
+    payload_length = int.from_bytes(prefix[5:13], "big")
+    if payload_length < 5:
+        raise ValueError("Invalid BPCS message length")
+    payload_block_count = (payload_length * 8 + 63) // 64
+    flags_size = (payload_block_count + 7) // 8
+    header_size = len(_BPCS_MAGIC) + 8 + flags_size
+    header_block_count = (header_size * 8 + 63) // 64
+    required_blocks = header_block_count + payload_block_count
+    if required_blocks > _bpcs_block_count(img):
+        raise ValueError("BPCS header declares data beyond the image capacity")
+    locations = list(islice(_bpcs_carrier_blocks(img), required_blocks))
+
+    header_bits = "".join(
+        str(bit) for location in locations[:header_block_count]
+        for bit in _bpcs_read_block(img, location).flat
+    )
+    header = _bits_to_bytes(header_bits)[:header_size]
+    conjugation_map = header[13:]
+    payload_bits = ""
+    for index in range(payload_block_count):
+        block = _bpcs_read_block(img, locations[header_block_count + index])
+        transformed = block ^ _BPCS_CHECKERBOARD
+        conjugated = bool(conjugation_map[index // 8] & (1 << (7 - index % 8)))
+        if conjugated:
+            transformed = 1 - transformed
+        payload_bits += "".join(str(bit) for bit in (transformed ^ _BPCS_CHECKERBOARD).flat)
+
+    payload = _bits_to_bytes(payload_bits)[:payload_length]
+    if not payload.endswith(b"*^*^*"):
+        raise ValueError("BPCS payload marker is missing; the image may be damaged")
+    try:
+        message = payload[:-5].decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise ValueError("BPCS payload is not valid UTF-8; the image may be damaged") from error
+    print("\nThe Encoded data which was hidden in the Image was :--  ", message)
 
 
 # In[10]:
@@ -258,9 +346,13 @@ def img_steg():
         choice1 = int(input("Enter the Choice: "))   
         if choice1 == 1:
             image=cv2.imread("Sample_cover_files/cover_image.jpg")
+            if image is None:
+                raise ValueError("Could not read Sample_cover_files/cover_image.jpg")
             encode_img_data(image)
         elif choice1 == 2:
             image1=cv2.imread(input("Enter the Image you need to Decode to get the Secret message :  "))
+            if image1 is None:
+                raise ValueError("Could not read the selected image")
             decode_img_data(image1)
         elif choice1 == 3:
             break
