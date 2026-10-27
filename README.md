@@ -1,41 +1,66 @@
-# Project Name : Steganography-Tools
-# Made By - Priyansh Sharma
+# Steganography Tools
 
-## Project Demo Implementation Video :
+A small, interactive Python command-line project demonstrating how text can be embedded in image, text, WAV audio, and video cover files. It includes sample cover files and a menu-driven interface in `Steganography.py`.
 
-https://user-images.githubusercontent.com/77832407/183821992-df55c835-ae41-4cd8-8253-6cbe7881eaf8.mp4
+> **Status:** Educational prototype. The implementations have known limitations and are not suitable for protecting sensitive information or for reliable production use. In particular, the video path uses RC4 (obsolete and insecure) and lossy video encoding, which can destroy embedded bits. See [Limitations](#limitations).
 
+## Features
 
-* Steganography is the art of hiding the fact that communication is taking place, by hiding information in other information. 
-* This project hides the message with in the image, text file, audio file and video file. In this project, the sender selects a cover file (image, text, audio or video) with secret text and hide it into the cover file by using different efficient algorithm and generate a stego file of same format as our cover file (image, text, audio or video). Then the stego file is sent to the destination with the help of private or public communication networks. On the other side i.e. receiver, the receiver downloads the stego file and by using the appropriate decoding algorithm retrieves the secret text that is hidden in the stego file.
+- **Image:** embeds UTF-8 text bits into the least significant bits of RGB pixels; the menu uses `Sample_cover_files/cover_image.jpg` as the encoding cover.
+- **Text:** hides encoded bits using zero-width Unicode characters in words from `Sample_cover_files/cover_text.txt`.
+- **Audio:** embeds text in WAV frame bytes using a modified least-significant-bit scheme.
+- **Video:** experimental single-frame embedding and extraction, with a user-provided key for the RC4 demonstration.
 
-![1](https://user-images.githubusercontent.com/77832407/152796278-a60d3042-a6cd-442d-96e0-7f5a8b11f3ed.jpg)
+The image, text, and audio paths use a `*^*^*` end marker. Video uses the same marker after encrypting its message.
 
-# Image Steganography ( Hiding TEXT in IMAGE ) :
-* Using ***Least Significant Bit Insertion*** we overwrite the LSB bit of actual image with the bit of text message character. At the end of text message we push a delimiter to the message string as a checkpoint useful in decoding function. We encode data in order of Red, then Green and then Blue pixel for the entire message.
+## Requirements
 
-# Text Steganography ( Hiding TEXT in TEXT ) :
-* In Unicode, there are specific zero-width characters (ZWC). We used four ZWCs for hiding the Secret Message through the Cover Text.
+- Python 3.8 or later
+- NumPy
+- OpenCV for Python (`opencv-python`)
+- For video support, an OpenCV build with a working video codec backend (the example writer requests XVID)
 
-![image](https://user-images.githubusercontent.com/77832407/152797497-54ad8d79-9375-4c8a-9b7a-2b3586303d47.png)
+## Setup
 
-* We get its ascii value and it is incremented or decremented based on if ascii value between 32 and 64 , it is incremented by 48(ascii value for 0) else it is decremented by 48
-* Then xor the the obtained value with 170(binary equivalent-10101010) 
-* Convert the obtained number from first two step to its binary equivalent then add "0011" if it earlier belonged to ascii value between 32 and 64 else add "0110" making it 12       bit for each character.
-* With the final binary equivalent we also 111111111111 as delimiter to find the end of message 
-* Now from 12 bit representing each character every 2 bit is replaced with equivalent ZWCs according to the table. Each character is hidden after a word in the cover text.
+From the repository root, create and activate a virtual environment, then install dependencies:
 
+```bash
+python -m venv .venv
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+# macOS/Linux: source .venv/bin/activate
+python -m pip install -r requirements.txt
+```
 
-# Audio Steganography ( Hiding TEXT in AUDIO ) :
-* For encoding we have modified the LSB Algorithm, for that we take each frame byte of the converting it to 8 bit format then check for the 4th LSB and see if it matches with the secret message bit. If yes change the 2nd LSB to 0 using logical AND operator between each frame byte and 253(11111101). Else we change the 2nd LSB to 1  using logical AND operation with 253 and then logical OR to change it to 1 and now add secret message bit in LSB for achieving that use logical AND operation between each frame byte of carrier audio and a binary number of 254 (11111110). Then logical OR operation between modified carrier byte and the next bit (0 or 1) from the secret message which resets the LSB of carrier byte.
+Run the interactive menu from the repository root so the relative sample-file paths resolve:
 
-# Video Steganography ( Hiding TEXT in Video ) :
-* In video steganography we have used combination of cryptography and Steganography. We encode the message through two parts
-* We convert plaintext to cipher text for doing so we have used RC4 Encryption Algorithm. ***RC4 is a stream cipher and variable-length key algorithm***. This algorithm encrypts one byte at a time. It has two major parts for encryption and decryption:-
-* ***KSA(Key-Scheduling Algorithm)***- A list S of length 256 is made and  the entries of S are set equal to the values from 0 to 255 in ascending order. We ask user for a key and convert it to its equivalent ascii code. S[] is a permutation of 0,1,2....255, now a variable j is assigned as   j=(j+S[i]+key[i%key_length) mod 256 and swap S(i) with S(j)  and accordingly we get new permutation for the whole keystream according to the key.
-* ***PRGA(Pseudo random generation Algorithm (Stream Generation))*** -  Now we take input length of plaintext and initiate loop to generate a keystream byte  of equal length. For this we initiate i=0, j=0 now increment i by 1 and mod with 256. Now we add S[i] to j amd mod of it with 256 ,again swap the values. At last step take store keystreambytes which matches as S[(S[i]+S[j]) mod 256] to finally get key stream of length same as plaintext. 
-* Now we xor the plaintext with keystream to get the final cipher.
+```bash
+python Steganography.py
+```
 
+Choose an operation from the menu and follow the prompts. Image encoding reads the bundled cover image; text encoding reads the bundled cover text; audio encoding asks for a WAV path. The current video implementation reads the bundled cover video and writes `stego_video.mp4` in the current directory.
 
+## Output and decoding
 
-***With Further Development In this Project " Steganography Tools", This Project Can be used by Indian army, RAW, Police and Intelligence agency for Special Emergency operation.***
+Provide output filenames with the desired extension when prompted. To decode, choose the matching media type and enter the stego file path when requested. Keep the original file format and avoid editing or recompressing the stego file before decoding: even small changes can corrupt the hidden data.
+
+For video, encoding and decoding are intended to happen in the same run of the video submenu; the implementation depends on in-memory frame state. Video handling is experimental and may fail depending on codec support.
+
+## Limitations
+
+- This is a demonstration, not encryption or secure communication. LSB and zero-width-character hiding provide no confidentiality or integrity.
+- The video feature uses RC4, which is cryptographically broken and must not be used for security. Its lossy output codec can alter the embedded frame data.
+- The command-line program assumes it is launched from the repository root and uses fixed sample paths for text, image, and video encoding.
+- Capacity checks, malformed input handling, Unicode support, and media/codec compatibility are limited. Use short, non-sensitive messages and copies of files.
+- The code is an interactive prototype; decoding results are printed to the terminal rather than returned as files.
+
+## Project files
+
+```text
+Steganography.py                 Interactive implementation
+requirements.txt                 Python dependencies
+Sample_cover_files/              Example image, text, audio, and video covers
+Explanation and Written description/
+                                 Supporting presentation and written report
+```
+
